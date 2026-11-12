@@ -25,6 +25,8 @@ from . import geometry as geo
 from .vlc_loader import load_vlc
 from .audio_export import AudioExporter
 from .export_dialog import ExportAudioDialog
+from . import effects as fx
+from .effects_dialog import EffectsDialog
 
 vlc, VLC_ERROR = load_vlc()
 
@@ -53,6 +55,8 @@ SHORTCUTS_HELP = """\
 <tr><td><b>Esc</b></td><td>Cancelar selección / salir de pantalla completa</td></tr>
 <tr><td><b>Ctrl+O</b></td><td>Abrir archivo</td></tr>
 <tr><td><b>Ctrl+E</b></td><td>Exportar audio</td></tr>
+<tr><td><b>Ctrl+I</b></td><td>Ajustes de imagen (brillo, contraste, color…)</td></tr>
+<tr><td><b>Ctrl+Shift+E</b></td><td>Ecualizador de audio</td></tr>
 </table>"""
 
 
@@ -196,6 +200,10 @@ class MainWindow(QMainWindow):
         self._restore = None              # restauración tras recrear el reproductor
         self._slider_pressed = False
         self._crop_pending = False        # reaplicar zoom cuando haya video
+        self.adjust = fx.ImageAdjust.from_json(self.settings.value("fx/adjust", ""))
+        self.eq = fx.Equalizer.from_json(self.settings.value("fx/equalizer", ""))
+        self._fx_dialog = None
+        self._adjust_was_active = False
 
         # --- widgets ---------------------------------------------------------
         self.video_frame = VideoFrame()
@@ -222,6 +230,7 @@ class MainWindow(QMainWindow):
         self.btn_rot_cw = button("⟳", "Rotar 90° horario (r)")
         self.btn_snap = button("📷 Captura", "Guardar lo que se ve como PNG (s)")
         self.btn_audio = button("🎵 Audio", "Exportar el audio a MP3, AAC, Ogg, Opus, WAV o FLAC (Ctrl+E)")
+        self.btn_fx = button("🎛 Ajustes", "Imagen (brillo, contraste, color…) y ecualizador (Ctrl+I)")
 
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 1000)
@@ -239,7 +248,7 @@ class MainWindow(QMainWindow):
         controls.setSpacing(4)
         for w in (self.btn_open, self.btn_play, self.btn_stop, self.btn_zoom,
                   self.btn_hflip, self.btn_vflip, self.btn_rot_ccw,
-                  self.btn_rot_cw, self.btn_snap, self.btn_audio):
+                  self.btn_rot_cw, self.btn_snap, self.btn_audio, self.btn_fx):
             controls.addWidget(w)
         controls.addWidget(self.slider, 1)
         controls.addWidget(self.lbl_time)
@@ -268,6 +277,7 @@ class MainWindow(QMainWindow):
         self.btn_rot_ccw.clicked.connect(lambda: self.apply_transform(geo.ROT_CCW))
         self.btn_snap.clicked.connect(self.snapshot)
         self.btn_audio.clicked.connect(self.export_audio)
+        self.btn_fx.clicked.connect(lambda: self.open_effects(0))
         self.slider.sliderPressed.connect(self._slider_press)
         self.slider.sliderReleased.connect(self._slider_release)
         self.slider.sliderMoved.connect(self._seek_slider)
@@ -285,6 +295,8 @@ class MainWindow(QMainWindow):
             "f": self.toggle_fullscreen,
             "Ctrl+O": self.open_file,
             "Ctrl+E": self.export_audio,
+            "Ctrl+I": lambda: self.open_effects(0),
+            "Ctrl+Shift+E": lambda: self.open_effects(1),
         }
         for seq, fn in shortcuts.items():
             QShortcut(QKeySequence(seq), self, activated=fn)
@@ -326,6 +338,12 @@ class MainWindow(QMainWindow):
         m_video.addAction("Restablecer orientación\tCtrl+0", self.reset_transform)
         m_video.addSeparator()
         m_video.addAction("Captura de lo que se ve\ts", self.snapshot)
+        m_video.addSeparator()
+        m_video.addAction("Ajustes de imagen…\tCtrl+I", lambda: self.open_effects(0))
+
+        m_audio = mb.addMenu("A&udio")
+        m_audio.addAction("Ecualizador…\tCtrl+Shift+E", lambda: self.open_effects(1))
+        m_audio.addAction("Exportar audio…\tCtrl+E", self.export_audio)
 
         m_help = mb.addMenu("A&yuda")
         m_help.addAction("Atajos de teclado", lambda: QMessageBox.information(
@@ -361,6 +379,10 @@ class MainWindow(QMainWindow):
             parts.append(geo.describe(self.transform))
         if self.zoom_stack:
             parts.append(f"ZOOM ×{self._zoom_factor():.1f}")
+        if self.adjust.active:
+            parts.append("Imagen ajustada")
+        if self.eq.enabled:
+            parts.append("EQ")
         self.lbl_state.setText("  ·  ".join(parts))
         self.btn_zoom.setChecked(bool(self.zoom_stack) or self.video_frame.armed)
 
@@ -369,7 +391,7 @@ class MainWindow(QMainWindow):
         """Crea instancia y reproductor. El filtro de espejo/rotación de VLC
         solo funciona como opción de instancia, así que cambiar la
         orientación implica recrearlos."""
-        args = ["--no-video-title-show", "--no-snapshot-preview", "--quiet"]
+        args = ["--no-video-title-show", "--no-snapshot-preview", "--no-osd", "--quiet"]
         ttype = geo.vlc_transform_type(self.transform)
         if ttype:
             args += ["--video-filter=transform", f"--transform-type={ttype}"]
@@ -389,6 +411,7 @@ class MainWindow(QMainWindow):
         else:
             self.player.set_xwindow(wid)
         self.player.audio_set_volume(self.vol.value())
+        fx.apply_equalizer(vlc, self.player, self.eq)
 
     def _release_player(self):
         if self.player is not None:
@@ -554,6 +577,13 @@ class MainWindow(QMainWindow):
         self._apply_crop()
         for delay in (300, 800, 1600):
             QTimer.singleShot(delay, self._apply_crop)
+        # los ajustes de imagen viven en la salida de video: misma situación
+        self._apply_video_effects(force=True)
+        for delay in (800, 1600):
+            QTimer.singleShot(delay, lambda: self._apply_video_effects(force=True))
+
+    def _apply_video_effects(self, force: bool = False):
+        fx.apply_adjust(vlc, self.player, self.adjust, force)
 
     def toggle_zoom(self):
         if self.video_frame.armed:
@@ -820,6 +850,34 @@ class MainWindow(QMainWindow):
         exporter.failed.connect(fail)
         progress.canceled.connect(cancel)
         exporter.start()
+
+    # ------------------------------------------------- imagen / ecualizador --
+    def open_effects(self, tab: int = 0):
+        if self._fx_dialog is None:
+            self._fx_dialog = EffectsDialog(self, vlc, self.adjust, self.eq)
+            self._fx_dialog.adjustChanged.connect(self._on_adjust_changed)
+            self._fx_dialog.equalizerChanged.connect(self._on_eq_changed)
+        self._fx_dialog.sync_from_state()
+        self._fx_dialog.show_tab(tab)
+
+    def _on_adjust_changed(self):
+        # Al pasar de inactivo a activo se fuerza el encendido del filtro; al
+        # mover un control con el filtro ya activo solo se cambian valores
+        # (forzar en cada movimiento haría parpadear el video).
+        turning_on = self.adjust.active and not self._adjust_was_active
+        self._adjust_was_active = self.adjust.active
+        self._apply_video_effects(force=turning_on)
+        if turning_on:
+            # VLC puede estar terminando de crear la salida de video (tras
+            # girar o abrir un archivo): se reafirma medio segundo después.
+            QTimer.singleShot(500, lambda: self._apply_video_effects(force=True))
+        self.settings.setValue("fx/adjust", self.adjust.to_json())
+        self._update_state_label()
+
+    def _on_eq_changed(self):
+        fx.apply_equalizer(vlc, self.player, self.eq)
+        self.settings.setValue("fx/equalizer", self.eq.to_json())
+        self._update_state_label()
 
     def closeEvent(self, e):
         if getattr(self, "_exporter", None) is not None:

@@ -1,9 +1,9 @@
 [project]
 name = "vlc-zoom-player"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reproductor basado en VLC con zoom por recuadro, espejo, rotación y captura de lo que se ve"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
 dependencies = ["PyQt5>=5.15,<6", "python-vlc>=3.0.18122,<4"]
 

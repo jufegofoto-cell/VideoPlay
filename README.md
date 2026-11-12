@@ -6,6 +6,8 @@ Reproductor de video para escritorio basado en **libVLC** (el motor de VLC) con 
 - **Espejo** horizontal y vertical.
 - **Rotación** de 90° en ambos sentidos. Se combina con el espejo y con el zoom: la zona ampliada se conserva al girar.
 - **Captura de lo que se ve**: guarda un PNG con el zoom, el espejo y la rotación aplicados, a la resolución real de esa zona del video (no es un pantallazo).
+- **Ajustes de imagen** en vivo: brillo, contraste, saturación, tono y gamma, con atajos como "Blanco y negro". Los ajustes también salen en las capturas.
+- **Ecualizador de audio** de 10 bandas (31 Hz a 16 kHz) con preamplificador y 18 presets (Rock, Pop, Clásica, Graves…).
 - **Exportar audio** de cualquier archivo que VLC pueda abrir (video o audio) a MP3, AAC (M4A), Ogg Vorbis, Opus, WAV o FLAC. Se puede exportar el archivo completo o un fragmento, elegir la pista de audio, la calidad y mono o estéreo, todo sin detener la reproducción.
 - Reproduce todo lo que reproduce VLC. Se pueden arrastrar archivos a la ventana y abrirlos con "Abrir con…" desde el Explorador.
 
@@ -18,7 +20,7 @@ Reproductor de video para escritorio basado en **libVLC** (el motor de VLC) con 
 ## Requisitos
 
 - **VLC media player 3.x** instalado, de la **misma arquitectura que Python**. Con Python de 64 bits se necesita VLC de 64 bits.
-- **Python 3.8 o superior**.
+- **Python 3.10 o superior** (las pruebas automáticas usan 3.11, 3.12 y 3.13).
 - Windows 10/11 (plataforma principal) o Linux. En macOS debería funcionar, pero no está probado.
 
 ## Instalación
@@ -61,8 +63,19 @@ Cada vez que se sube código a `main`, GitHub Actions (`.github/workflows/ci.yml
 | `Esc` / clic derecho | Cancelar selección · salir de pantalla completa |
 | `Ctrl+O` | Abrir archivo |
 | `Ctrl+E` | Exportar audio |
+| `Ctrl+I` | Ajustes de imagen |
+| `Ctrl+Shift+E` | Ecualizador |
 
 Las capturas se guardan por defecto en `Imágenes/VLC Zoom Player`. La carpeta se cambia en **Archivo → Elegir carpeta de capturas…**. El nombre incluye el video, el minuto del video y la fecha con milisegundos, así que dos capturas seguidas no se sobrescriben.
+
+### Ajustes de imagen y ecualizador
+
+Botón **🎛 Ajustes**, **Video → Ajustes de imagen…** (`Ctrl+I`) o **Audio → Ecualizador…** (`Ctrl+Shift+E`). La ventana no bloquea el reproductor: los cambios se ven y se oyen al instante, también con el video en pausa, y se recuerdan para la próxima vez.
+
+- **Imagen:** brillo (0–2), contraste (0–2), saturación (0–3), tono (−180° a +180°) y gamma (0,1–3). Cada control tiene un botón para volver a su valor original, y hay atajos de "Blanco y negro", "Más contraste" y "Más brillo". Los ajustes se mantienen al girar o reflejar el video.
+- **Ecualizador:** 10 bandas de −20 a +20 dB, preamplificador y presets de VLC. Al mover una banda el preset pasa a "Personalizado".
+
+![Ajustes de imagen y ecualizador](docs/ajustes.png)
 
 ### Exportar audio
 
@@ -92,14 +105,19 @@ El video se dibuja en la ventana nativa de VLC, que mantiene la aceleración por
 
 - **Exportar audio.** Se crea una instancia de libVLC aparte con una cadena `#transcode{vcodec=none,…}:std{…}`. Se añade `:no-sout-all` porque, sin esa opción, VLC mezcla todas las pistas de audio en el mismo archivo. Con algunos contenedores (MKV) VLC ignora `:start-time` al transcodificar. Por eso, si el fragmento no empieza en 0, se exporta primero a un WAV temporal hasta el final del fragmento, se recorta el inicio y luego se codifica al formato elegido. FLAC va en Ogg porque el FLAC "crudo" de VLC queda sin duración en la cabecera.
 
+- **Ajustes de imagen.** Usan el filtro `adjust` de VLC (`video_set_adjust_*`), que actúa antes de la captura. Al recrear el reproductor VLC ignora "activar" si cree que el filtro ya estaba activo, así que en ese momento la app lo apaga y lo vuelve a encender. Volver a buscar la misma posición para refrescar un video pausado no sirve: recrea la salida de video y se pierde el filtro.
+- **Ecualizador.** Usa `libvlc_audio_equalizer_*` sobre el reproductor. El transcodificador de VLC ignora el filtro de ecualizador, por eso no se aplica al exportar audio.
+
 ```
 vlc_zoom_player/
   app.py          ventana principal, reproductor y acciones
+  effects.py      estado y aplicación de ajustes de imagen y ecualizador
+  effects_dialog.py ventana "Ajustes" (pestañas Imagen y Ecualizador)
   audio_export.py exportación de audio con el transcodificador de libVLC
   export_dialog.py  diálogo "Exportar audio"
   geometry.py     matemática pura de zoom, espejo y rotación (sin Qt ni VLC)
   vlc_loader.py   localiza libVLC en Windows y muestra un error claro si falta
-tests/            pruebas unitarias (geometría y exportación de audio)
+tests/            pruebas unitarias (geometría, exportación de audio, efectos)
 tools/smoke_test.py   prueba de extremo a extremo con la app real
 ```
 
@@ -117,6 +135,7 @@ La prueba de humo reproduce el video, aplica zoom (incluido el anidado), rotaci�
 
 - Cambiar el espejo o la rotación produce un corte breve, porque se recrea el reproductor. Es una limitación de libVLC 3.
 - Con espejo o rotación, VLC puede dejar de usar la decodificación por hardware para aplicar el filtro. En videos 4K eso puede subir el uso de CPU.
+- El ecualizador afecta a la reproducción, no al audio exportado.
 - No se tiene en cuenta la relación de aspecto de píxel no cuadrado (video anamórfico) al calcular el recuadro.
 
 ## Licencia

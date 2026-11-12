@@ -19,6 +19,7 @@ from PyQt5.QtGui import QImage, QGuiApplication  # noqa: E402
 
 from vlc_zoom_player import app as appmod  # noqa: E402
 from vlc_zoom_player import geometry as geo  # noqa: E402
+from vlc_zoom_player import effects as fx  # noqa: E402
 
 
 def run(video, out_dir):
@@ -26,6 +27,12 @@ def run(video, out_dir):
     qapp = appmod.QApplication(sys.argv[:1])
     win = appmod.MainWindow()
     win.settings.setValue("captures_dir", out_dir)
+    win.adjust.reset()                 # empezar sin efectos guardados
+    win.adjust.enabled = False
+    win.eq.reset()
+    win.eq.enabled = False
+    win._on_adjust_changed()
+    win._on_eq_changed()
     win.move(0, 0)
     win.show()
     results, failures = [], []
@@ -47,6 +54,27 @@ def run(video, out_dir):
             size = (img.width(), img.height())
             check(f"captura {name}", not img.isNull() and size == expect_size,
                   f"esperado={expect_size} obtenido={size}")
+            if path and os.path.exists(path):
+                os.replace(path, os.path.join(out_dir, f"snap_{name}.png"))
+        QTimer.singleShot(900, verify)
+
+    def colorfulness(img):
+        """Diferencia media entre canales (0 = gris)."""
+        total, n = 0, 0
+        for y in range(0, img.height(), max(1, img.height() // 40)):
+            for x in range(0, img.width(), max(1, img.width() // 40)):
+                c = img.pixelColor(x, y)
+                total += max(c.red(), c.green(), c.blue()) - min(c.red(), c.green(), c.blue())
+                n += 1
+        return total / max(1, n)
+
+    def snap_color(name, want_gray):
+        path = win.snapshot()
+        def verify():
+            img = QImage(path or "")
+            col = colorfulness(img) if not img.isNull() else -1
+            ok = (0 <= col < 12) if want_gray else col > 60
+            check(f"captura {name} ({'gris' if want_gray else 'color'})", ok, f"color={col:.1f}")
             if path and os.path.exists(path):
                 os.replace(path, os.path.join(out_dir, f"snap_{name}.png"))
         QTimer.singleShot(900, verify)
@@ -138,6 +166,54 @@ def run(video, out_dir):
     def _10():
         win.reset_transform()
         win.reset_zoom()
+
+    @step(2000)
+    def _11():
+        win.adjust.enabled = True
+        win.adjust.set("saturation", 0.0)
+        win._on_adjust_changed()
+        fx.load_preset(appmod.vlc, win.eq, 13)          # Rock
+        win.eq.enabled = True
+        win._on_eq_changed()
+        check("estado de ajustes", win.adjust.active and win.eq.enabled
+              and "Imagen ajustada" in win.lbl_state.text(), win.lbl_state.text())
+
+    @step(1500)
+    def _12():
+        screen("7_blanco_y_negro")
+        snap_color("7_blanco_y_negro", True)
+
+    @step(1500)
+    def _13():
+        win.apply_transform(geo.ROT_CW)                  # recrea el reproductor
+
+    @step(3000)
+    def _14():
+        snap_color("8_bn_rotado", True)
+        win.open_effects(1)
+
+    @step(1500)
+    def _15():
+        d = win._fx_dialog
+        QGuiApplication.primaryScreen().grabWindow(0).copy(d.frameGeometry()).save(
+            os.path.join(out_dir, "screen_9_ecualizador.png"))
+        d.show_tab(0)
+
+    @step(800)
+    def _16():
+        d = win._fx_dialog
+        QGuiApplication.primaryScreen().grabWindow(0).copy(d.frameGeometry()).save(
+            os.path.join(out_dir, "screen_10_imagen.png"))
+        d.close()
+        win.adjust.enabled = False
+        win._on_adjust_changed()
+        win.reset_transform()
+
+    @step(3000)
+    def _17():
+        snap_color("11_sin_ajustes", False)
+        win.eq.enabled = False
+        win._on_eq_changed()
 
     @step(2000)
     def _end():
