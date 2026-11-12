@@ -1,18 +1,22 @@
-# Integración continua de VLC Zoom Player
-# - tests: pruebas unitarias en Windows y Linux con varias versiones de Python
-# - windows-exe: genera VLCZoomPlayer.exe (PyInstaller) como artefacto descargable
-#   y, al publicar una etiqueta v*, lo adjunta a un Release de GitHub.
+# VLC Zoom Player: pruebas y ejecutable de Windows.
+# NO se ejecuta solo: se lanza a mano desde la pestaña Actions →
+# "CI" → botón "Run workflow".
 name: CI
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      ejecutable:
+        description: "Generar el ejecutable de Windows"
+        type: boolean
+        default: true
+      version:
+        description: "Publicar un Release con esta versión (ej. v0.4.0). Vacío = no publicar"
+        type: string
+        default: ""
 
 permissions:
-  contents: write   # necesario para crear el Release al etiquetar
+  contents: write   # necesario solo para publicar el Release
 
 jobs:
   tests:
@@ -22,12 +26,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        python: ["3.9", "3.11", "3.12"]
+        python: ["3.11", "3.12", "3.13"]
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -43,10 +47,11 @@ jobs:
   windows-exe:
     name: Ejecutable de Windows
     needs: tests
+    if: ${{ inputs.ejecutable }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -69,13 +74,15 @@ jobs:
           Copy-Item README.md, LICENSE dist/VLCZoomPlayer/
           Compress-Archive -Path dist/VLCZoomPlayer -DestinationPath VLCZoomPlayer-windows.zip
       - name: Subir artefacto
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: VLCZoomPlayer-windows
           path: VLCZoomPlayer-windows.zip
-      - name: Publicar Release (solo etiquetas v*)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publicar Release
+        if: ${{ inputs.version != '' }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.version }}
+          name: VLC Zoom Player ${{ inputs.version }}
           files: VLCZoomPlayer-windows.zip
           generate_release_notes: true
