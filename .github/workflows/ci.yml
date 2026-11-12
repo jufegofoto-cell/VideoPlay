@@ -1,0 +1,81 @@
+# Integración continua de VLC Zoom Player
+# - tests: pruebas unitarias en Windows y Linux con varias versiones de Python
+# - windows-exe: genera VLCZoomPlayer.exe (PyInstaller) como artefacto descargable
+#   y, al publicar una etiqueta v*, lo adjunta a un Release de GitHub.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario para crear el Release al etiquetar
+
+jobs:
+  tests:
+    name: Pruebas (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.9", "3.11", "3.12"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt pyflakes
+      - name: Análisis estático
+        run: python -m pyflakes vlc_zoom_player tools tests
+      - name: Pruebas unitarias
+        run: python -m pytest -v
+
+  windows-exe:
+    name: Ejecutable de Windows
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Construir VLCZoomPlayer.exe
+        run: >
+          pyinstaller --noconfirm --clean --windowed --onedir
+          --name VLCZoomPlayer
+          --paths .
+          tools/pyinstaller_entry.py
+      - name: Empaquetar
+        shell: pwsh
+        run: |
+          # La app usa el VLC instalado en el equipo: nunca empaquetar una copia
+          # de libVLC (sin sus plugins no arranca).
+          Remove-Item dist/VLCZoomPlayer/_internal/libvlc*.dll -ErrorAction SilentlyContinue
+          Copy-Item README.md, LICENSE dist/VLCZoomPlayer/
+          Compress-Archive -Path dist/VLCZoomPlayer -DestinationPath VLCZoomPlayer-windows.zip
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLCZoomPlayer-windows
+          path: VLCZoomPlayer-windows.zip
+      - name: Publicar Release (solo etiquetas v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: VLCZoomPlayer-windows.zip
+          generate_release_notes: true
