@@ -45,7 +45,7 @@ python3 -m venv .venv
 
 ### Ejecutable de Windows (sin instalar Python)
 
-Cada vez que se sube código a `main`, GitHub Actions (`.github/workflows/ci.yml`) corre las pruebas y genera **VLCZoomPlayer-windows.zip**. Se descarga desde la pestaña **Actions**: abre la ejecución más reciente y busca la sección *Artifacts*. Si publicas una etiqueta `v0.3.0` (o cualquier `v*`), el zip queda además adjunto a un *Release*. El ejecutable usa el VLC de 64 bits instalado en el equipo.
+GitHub Actions (`.github/workflows/ci.yml`) **no se ejecuta automáticamente**. Para lanzarlo: pestaña **Actions → CI → Run workflow**. Corre las pruebas y, si dejas marcada la opción "Generar el ejecutable de Windows", crea **VLCZoomPlayer-windows.zip**. Se descarga desde esa misma ejecución, en la sección *Artifacts*. Si escribes una versión (por ejemplo `v0.4.0`), el zip se publica además como *Release*. El ejecutable usa el VLC de 64 bits instalado en el equipo.
 
 ## Uso
 
