@@ -64,13 +64,5 @@ def test_compose_view_nested():
     assert geo.compose_view((0.5, 0.5, 0.5, 0.5), (0.5, 0, 0.5, 1)) == (0.75, 0.5, 0.25, 0.5)
 
 
-def test_crop_borders():
-    assert geo.crop_borders(geo.FULL_VIEW, 1280, 720) is None
-    assert geo.crop_borders((0.25, 0.25, 0.5, 0.5), 1280, 720) == "320+180+320+180"
-    # siempre valores pares
-    for v in geo.crop_borders((0.1234, 0.333, 0.5, 0.4), 1279, 721).split("+"):
-        assert int(v) % 2 == 0
-
-
 def test_view_pixel_size():
     assert geo.view_pixel_size((0, 0, 0.5, 0.25), 720, 1280) == (360, 320)

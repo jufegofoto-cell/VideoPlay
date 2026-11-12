@@ -3,7 +3,11 @@
 VLC Zoom Player — ventana principal.
 
 Reproductor basado en libVLC (el motor de VLC) con zoom por recuadro,
-espejo, rotación y captura de lo que se ve en pantalla.
+espejo, rotación, captura de lo que se ve, lista de reproducción, ajustes
+de imagen, ecualizador y exportación de audio.
+
+VLC decodifica el audio y el video; la imagen la dibuja la app
+(ver ``video_view.py``), así el zoom no depende del recorte de VLC.
 """
 
 from __future__ import annotations
@@ -12,38 +16,44 @@ import os
 import sys
 import time
 
-from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, QSettings, QStandardPaths, QUrl, pyqtSignal
-from PyQt5.QtGui import QKeySequence, QDesktopServices, QRegion
+from PyQt5.QtCore import Qt, QTimer, QRect, QRectF, QSettings, QStandardPaths, QUrl
+from PyQt5.QtCore import QPointF
+from PyQt5.QtGui import QKeySequence, QDesktopServices, QIcon, QPixmap, QPainter, QColor, QPolygonF
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSlider, QLabel, QFileDialog, QShortcut,
-    QMessageBox, QStyle, QSizePolicy, QProgressDialog,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QSlider, QLabel, QFileDialog, QShortcut, QMessageBox, QStyle,
+    QProgressDialog, QDockWidget, QFrame,
 )
 
 from . import __version__
 from . import geometry as geo
+from . import effects as fx
 from .vlc_loader import load_vlc
 from .audio_export import AudioExporter
 from .export_dialog import ExportAudioDialog
-from . import effects as fx
 from .effects_dialog import EffectsDialog
+from .playlist import PlaylistPanel, read_m3u
+from .video_view import FrameSource, VideoView
 
 vlc, VLC_ERROR = load_vlc()
 
 APP_TITLE = "VLC Zoom Player"
-MIN_SELECTION_PX = 12        # tamaño mínimo del recuadro en pantalla
 MIN_ZOOM_SRC_PX = 16         # tamaño mínimo de la zona ampliada en el video
+SEEK_STEP_MS = 10000         # botones ⏪ / ⏩
 
 VLC_EXTENSIONS = (
     "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.ts *.m2ts *.mts *.mpg *.mpeg "
     "*.3gp *.vob *.ogv *.rm *.rmvb *.divx *.asf *.m4v "
     "*.mp3 *.flac *.aac *.wav *.ogg *.oga *.wma *.m4a *.opus *.aiff *.aif "
-    "*.ape *.mka *.ac3 *.dts *.m3u *.m3u8 *.pls"
+    "*.ape *.mka *.ac3 *.dts"
 )
+MEDIA_FILTER = f"Formatos VLC ({VLC_EXTENSIONS});;Todos los archivos (*.*)"
+PLAYLIST_EXT = (".m3u", ".m3u8")
 
 SHORTCUTS_HELP = """\
 <table cellspacing=4>
-<tr><td><b>z</b></td><td>Zoom: dibujar recuadro / quitar zoom</td></tr>
+<tr><td><b>z</b></td><td>Zoom: dibujar recuadro (o quitar el zoom)</td></tr>
+<tr><td><b>a</b></td><td>Zoom All: volver al video completo</td></tr>
 <tr><td><b>Shift+Z</b></td><td>Deshacer último nivel de zoom</td></tr>
 <tr><td><b>s</b></td><td>Captura de lo que se ve (PNG)</td></tr>
 <tr><td><b>h</b> / <b>v</b></td><td>Espejo horizontal / vertical</td></tr>
@@ -51,9 +61,12 @@ SHORTCUTS_HELP = """\
 <tr><td><b>Ctrl+0</b></td><td>Restablecer orientación</td></tr>
 <tr><td><b>Espacio</b></td><td>Play / Pausa</td></tr>
 <tr><td><b>← / →</b></td><td>Retroceder / avanzar 5 s</td></tr>
+<tr><td><b>Shift+← / Shift+→</b></td><td>Retroceder / avanzar 10 s</td></tr>
+<tr><td><b>p</b> / <b>n</b></td><td>Anterior / siguiente de la lista</td></tr>
+<tr><td><b>Ctrl+L</b></td><td>Mostrar / ocultar la lista de reproducción</td></tr>
 <tr><td><b>f</b> o doble clic</td><td>Pantalla completa</td></tr>
 <tr><td><b>Esc</b></td><td>Cancelar selección / salir de pantalla completa</td></tr>
-<tr><td><b>Ctrl+O</b></td><td>Abrir archivo</td></tr>
+<tr><td><b>Ctrl+O</b></td><td>Abrir archivos</td></tr>
 <tr><td><b>Ctrl+E</b></td><td>Exportar audio</td></tr>
 <tr><td><b>Ctrl+I</b></td><td>Ajustes de imagen (brillo, contraste, color…)</td></tr>
 <tr><td><b>Ctrl+Shift+E</b></td><td>Ecualizador de audio</td></tr>
@@ -75,119 +88,67 @@ def default_captures_dir() -> str:
     return os.path.join(base, "VLC Zoom Player")
 
 
-# ---------------------------------------------------------------------------
-# Marco de selección: ventana flotante con forma de contorno. El video de VLC
-# es una ventana nativa que tapa a los widgets hijos, y sin compositor (X11)
-# una ventana translúcida se vería opaca; la máscara funciona en todos lados.
-# ---------------------------------------------------------------------------
-class SelectionOutline(QWidget):
-    BORDER = 2
-
-    def __init__(self):
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-                         | Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setStyleSheet("background:#7fd4ff;")
-
-    def set_rect(self, rect: QRect):
-        self.setGeometry(rect)
-        r = QRect(0, 0, rect.width(), rect.height())
-        b = self.BORDER
-        inner = r.adjusted(b, b, -b, -b)
-        region = QRegion(r)
-        if inner.isValid():
-            region = region.subtracted(QRegion(inner))
-        self.setMask(region)
+def expand_paths(paths):
+    """Archivos sueltos y listas .m3u -> lista de rutas a reproducir."""
+    out = []
+    for p in paths:
+        if p.lower().endswith(PLAYLIST_EXT) and os.path.isfile(p):
+            try:
+                out.extend(read_m3u(p))
+            except OSError:
+                pass
+        elif p:
+            out.append(p)
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Área de video: recibe la ventana de libVLC y gestiona la selección del zoom
-# ---------------------------------------------------------------------------
-class VideoFrame(QFrame):
-    zoomRectSelected = pyqtSignal(QRect)     # en coordenadas del widget
-    zoomSelectionCancelled = pyqtSignal()
-    doubleClicked = pyqtSignal()
+def media_icon(kind: str, color: str = "#e8e8e8", size: int = 20) -> QIcon:
+    """Íconos de reproducción dibujados en color claro (los del sistema son
+    oscuros y casi no se ven sobre botones oscuros)."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    s = float(size)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background: black;")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._armed = False
-        self._selecting = False
-        self._origin = QPoint()
-        self._rubber = SelectionOutline()
+    def tri(x0, x1, y0=0.2, y1=0.8):         # triángulo hacia la derecha si x1 > x0
+        p.drawPolygon(QPolygonF([QPointF(x0 * s, y0 * s), QPointF(x1 * s, 0.5 * s),
+                                 QPointF(x0 * s, y1 * s)]))
 
-    @property
-    def armed(self) -> bool:
-        return self._armed
+    def bar(x, w=0.12, y0=0.2, y1=0.8):
+        p.drawRect(QRectF(x * s, y0 * s, w * s, (y1 - y0) * s))
 
-    def arm_selection(self, armed: bool):
-        self._armed = armed
-        self._selecting = False
-        self._rubber.hide()
-        self.setCursor(Qt.CrossCursor if armed else Qt.ArrowCursor)
-
-    def cancel_selection(self):
-        if self._armed or self._selecting:
-            self.arm_selection(False)
-            self.zoomSelectionCancelled.emit()
-
-    def _clamped(self, pos: QPoint) -> QPoint:
-        return QPoint(max(0, min(self.width() - 1, pos.x())),
-                      max(0, min(self.height() - 1, pos.y())))
-
-    def _update_rubber(self, pos: QPoint):
-        local = QRect(self._origin, self._clamped(pos)).normalized()
-        self._rubber.set_rect(QRect(self.mapToGlobal(local.topLeft()), local.size()))
-
-    def mousePressEvent(self, e):
-        if self._armed and e.button() == Qt.LeftButton:
-            self._selecting = True
-            self._origin = self._clamped(e.pos())
-            self._update_rubber(e.pos())
-            self._rubber.show()
-            self._rubber.raise_()
-        elif self._armed and e.button() == Qt.RightButton:
-            self.cancel_selection()
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._selecting:
-            self._update_rubber(e.pos())
-        super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if self._selecting and e.button() == Qt.LeftButton:
-            rect = QRect(self._origin, self._clamped(e.pos())).normalized()
-            self.arm_selection(False)
-            if rect.width() >= MIN_SELECTION_PX and rect.height() >= MIN_SELECTION_PX:
-                self.zoomRectSelected.emit(rect)
-            else:
-                self.zoomSelectionCancelled.emit()
-        super().mouseReleaseEvent(e)
-
-    def mouseDoubleClickEvent(self, e):
-        if not self._armed:
-            self.doubleClicked.emit()
-        super().mouseDoubleClickEvent(e)
-
-    def hideEvent(self, e):
-        try:
-            self._rubber.hide()
-        except RuntimeError:   # ya destruido al cerrar la aplicación
-            pass
-        super().hideEvent(e)
+    if kind == "play":
+        tri(0.28, 0.82)
+    elif kind == "pause":
+        bar(0.28, 0.16)
+        bar(0.56, 0.16)
+    elif kind == "stop":
+        p.drawRect(QRectF(0.25 * s, 0.25 * s, 0.5 * s, 0.5 * s))
+    elif kind == "fwd":
+        tri(0.12, 0.5)
+        tri(0.5, 0.88)
+    elif kind == "back":
+        tri(0.5, 0.12)
+        tri(0.88, 0.5)
+    elif kind == "next":
+        tri(0.2, 0.68)
+        bar(0.68)
+    elif kind == "prev":
+        tri(0.8, 0.32)
+        bar(0.2)
+    p.end()
+    return QIcon(pm)
 
 
-# ---------------------------------------------------------------------------
-# Ventana principal
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1180, 720)
+        self.resize(1240, 760)
         self.setAcceptDrops(True)
         self.settings = QSettings("VLCZoomPlayer", "VLCZoomPlayer")
 
@@ -195,42 +156,79 @@ class MainWindow(QMainWindow):
         self.media_path = None
         self.transform = geo.IDENTITY     # espejo/rotación actual (matriz D4)
         self.zoom_stack = []              # zonas ampliadas, en orientación original
-        self.instance = None
-        self.player = None
-        self._restore = None              # restauración tras recrear el reproductor
         self._slider_pressed = False
-        self._crop_pending = False        # reaplicar zoom cuando haya video
+        self._vout_pending = False        # aplicar ajustes cuando llegue el video
+        self._last_state = None
         self.adjust = fx.ImageAdjust.from_json(self.settings.value("fx/adjust", ""))
         self.eq = fx.Equalizer.from_json(self.settings.value("fx/equalizer", ""))
-        self._fx_dialog = None
         self._adjust_was_active = False
+        self._fx_dialog = None
+        self._exporter = None
 
-        # --- widgets ---------------------------------------------------------
-        self.video_frame = VideoFrame()
-        self.video_frame.zoomRectSelected.connect(self._on_zoom_rect)
-        self.video_frame.zoomSelectionCancelled.connect(self._on_zoom_cancelled)
-        self.video_frame.doubleClicked.connect(self.toggle_fullscreen)
+        # --- libVLC ----------------------------------------------------------
+        self.instance = vlc.Instance("--no-video-title-show", "--no-snapshot-preview",
+                                     "--no-osd", "--quiet")
+        if self.instance is None:
+            raise RuntimeError("libVLC no pudo inicializarse")
+        self.player = self.instance.media_player_new()
+        self.frames = FrameSource(vlc)
+        self.frames.attach(self.player)
 
-        def button(text, tip, checkable=False):
+        # --- área de video ---------------------------------------------------
+        self.video = VideoView(self.frames)
+        self.video.zoomRectSelected.connect(self._on_zoom_rect)
+        self.video.zoomSelectionCancelled.connect(self._on_zoom_cancelled)
+        self.video.doubleClicked.connect(self.toggle_fullscreen)
+
+        # --- lista de reproducción --------------------------------------------
+        self.playlist = PlaylistPanel(MEDIA_FILTER)
+        self.playlist.playRequested.connect(self.play_index)
+        self.playlist.changed.connect(self._save_playlist)
+        self.dock = QDockWidget("Lista de reproducción", self)
+        self.dock.setObjectName("playlist")
+        self.dock.setWidget(self.playlist)
+        self.dock.setMinimumWidth(240)
+        self.dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        self.dock.visibilityChanged.connect(lambda v: self.btn_list.setChecked(v))
+
+        # --- controles -------------------------------------------------------
+        def button(text, tip, checkable=False, icon=None):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.setCheckable(checkable)
             b.setFocusPolicy(Qt.NoFocus)   # Espacio no debe "pulsar" el botón
+            if isinstance(icon, str):
+                b.setIcon(media_icon(icon))
+            elif icon is not None:
+                b.setIcon(self.style().standardIcon(icon))
             return b
 
-        self.btn_open = button("Abrir", "Abrir archivo (Ctrl+O)")
-        self.btn_play = button("", "Play / Pausa (Espacio)")
-        self.btn_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.btn_stop = button("", "Detener")
-        self.btn_stop.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
-        self.btn_zoom = button("🔍 Zoom", "Dibujar recuadro para ampliar / quitar zoom (z)", True)
+
+
+        self.btn_open = button("", "Abrir archivos (Ctrl+O)", icon=QStyle.SP_DialogOpenButton)
+        self.btn_prev = button("", "Anterior de la lista (p)", icon="prev")
+        self.btn_back = button("", "Retroceder 10 s (Shift+←)", icon="back")
+        self.btn_play = button("", "Play / Pausa (Espacio)", icon="play")
+        self.btn_fwd = button("", "Adelantar 10 s (Shift+→)", icon="fwd")
+        self.btn_next = button("", "Siguiente de la lista (n)", icon="next")
+        self.btn_stop = button("", "Detener", icon="stop")
+        self.btn_zoom = button("🔍 Zoom", "Dibujar recuadro para ampliar (z)", True)
+        self.btn_zoom_all = button("⤢ Zoom All", "Volver al video completo (a)")
         self.btn_hflip = button("⇋", "Espejo horizontal (h)")
         self.btn_vflip = button("⇵", "Espejo vertical (v)")
         self.btn_rot_ccw = button("⟲", "Rotar 90° antihorario (Shift+R)")
         self.btn_rot_cw = button("⟳", "Rotar 90° horario (r)")
-        self.btn_snap = button("📷 Captura", "Guardar lo que se ve como PNG (s)")
-        self.btn_audio = button("🎵 Audio", "Exportar el audio a MP3, AAC, Ogg, Opus, WAV o FLAC (Ctrl+E)")
-        self.btn_fx = button("🎛 Ajustes", "Imagen (brillo, contraste, color…) y ecualizador (Ctrl+I)")
+        self.btn_snap = button("📷", "Captura: guardar lo que se ve como PNG (s)")
+        self.btn_audio = button("🎵", "Exportar audio a MP3, AAC, Ogg, Opus, WAV o FLAC (Ctrl+E)")
+        self.btn_fx = button("🎛", "Ajustes de imagen (brillo, contraste, color…) y ecualizador (Ctrl+I)")
+        self.btn_list = button("☰ Lista", "Mostrar / ocultar la lista de reproducción (Ctrl+L)", True)
+
+        self._fixed_buttons = (
+            self.btn_open, self.btn_prev, self.btn_back, self.btn_play, self.btn_fwd,
+            self.btn_next, self.btn_stop, self.btn_zoom, self.btn_zoom_all, self.btn_hflip,
+            self.btn_vflip, self.btn_rot_ccw, self.btn_rot_cw, self.btn_snap, self.btn_audio,
+            self.btn_fx, self.btn_list)
 
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 1000)
@@ -240,37 +238,65 @@ class MainWindow(QMainWindow):
         self.vol.setValue(int(self.settings.value("volume", 80)))
         self.vol.setMaximumWidth(110)
         self.vol.setToolTip("Volumen")
-
         self.lbl_state = QLabel("")
         self.lbl_state.setStyleSheet("color:#7fd4ff; font-weight:bold;")
 
-        controls = QHBoxLayout()
-        controls.setSpacing(4)
-        for w in (self.btn_open, self.btn_play, self.btn_stop, self.btn_zoom,
-                  self.btn_hflip, self.btn_vflip, self.btn_rot_ccw,
-                  self.btn_rot_cw, self.btn_snap, self.btn_audio, self.btn_fx):
-            controls.addWidget(w)
-        controls.addWidget(self.slider, 1)
-        controls.addWidget(self.lbl_time)
-        controls.addWidget(QLabel("🔊"))
-        controls.addWidget(self.vol)
+        def sep():
+            f = QFrame()
+            f.setFrameShape(QFrame.VLine)
+            f.setStyleSheet("color:#3c414a;")
+            return f
+
+        row_time = QHBoxLayout()
+        row_time.addWidget(self.slider, 1)
+        row_time.addWidget(self.lbl_time)
+
+        row_btn = QHBoxLayout()
+        row_btn.setSpacing(4)
+        groups = [
+            (self.btn_open,),
+            (self.btn_prev, self.btn_back, self.btn_play, self.btn_fwd, self.btn_next, self.btn_stop),
+            (self.btn_zoom, self.btn_zoom_all),
+            (self.btn_hflip, self.btn_vflip, self.btn_rot_ccw, self.btn_rot_cw),
+            (self.btn_snap, self.btn_audio, self.btn_fx, self.btn_list),
+        ]
+        for gi, group in enumerate(groups):
+            if gi:
+                row_btn.addWidget(sep())
+            for w in group:
+                row_btn.addWidget(w)
+        row_btn.addStretch(1)
+        row_btn.addWidget(QLabel("🔊"))
+        row_btn.addWidget(self.vol)
+
+        self.controls = QWidget()
+        cl = QVBoxLayout(self.controls)
+        cl.setContentsMargins(0, 4, 0, 0)
+        cl.setSpacing(4)
+        cl.addLayout(row_time)
+        cl.addLayout(row_btn)
 
         root = QWidget()
         lay = QVBoxLayout(root)
         lay.setContentsMargins(6, 6, 6, 6)
-        lay.addWidget(self.video_frame, 1)
-        lay.addLayout(controls)
+        lay.addWidget(self.video, 1)
+        lay.addWidget(self.controls)
         self.setCentralWidget(root)
         self.statusBar().addPermanentWidget(self.lbl_state)
-        self.statusBar().showMessage("Listo — Ctrl+O o arrastra un archivo para reproducir")
+        self.statusBar().showMessage("Listo — Ctrl+O o arrastra archivos para reproducir")
 
         self._build_menu()
 
         # --- conexiones ------------------------------------------------------
-        self.btn_open.clicked.connect(self.open_file)
+        self.btn_open.clicked.connect(self.open_files)
+        self.btn_prev.clicked.connect(self.play_prev)
+        self.btn_back.clicked.connect(lambda: self.seek_rel(-SEEK_STEP_MS))
         self.btn_play.clicked.connect(self.toggle_play)
+        self.btn_fwd.clicked.connect(lambda: self.seek_rel(SEEK_STEP_MS))
+        self.btn_next.clicked.connect(self.play_next)
         self.btn_stop.clicked.connect(self.stop)
         self.btn_zoom.clicked.connect(self.toggle_zoom)
+        self.btn_zoom_all.clicked.connect(self.zoom_all)
         self.btn_hflip.clicked.connect(lambda: self.apply_transform(geo.HFLIP))
         self.btn_vflip.clicked.connect(lambda: self.apply_transform(geo.VFLIP))
         self.btn_rot_cw.clicked.connect(lambda: self.apply_transform(geo.ROT_CW))
@@ -278,6 +304,7 @@ class MainWindow(QMainWindow):
         self.btn_snap.clicked.connect(self.snapshot)
         self.btn_audio.clicked.connect(self.export_audio)
         self.btn_fx.clicked.connect(lambda: self.open_effects(0))
+        self.btn_list.clicked.connect(self.toggle_playlist)
         self.slider.sliderPressed.connect(self._slider_press)
         self.slider.sliderReleased.connect(self._slider_release)
         self.slider.sliderMoved.connect(self._seek_slider)
@@ -285,6 +312,7 @@ class MainWindow(QMainWindow):
 
         shortcuts = {
             "z": self.toggle_zoom,
+            "a": self.zoom_all,
             "Shift+Z": self.zoom_out_one,
             "s": self.snapshot,
             "h": lambda: self.apply_transform(geo.HFLIP),
@@ -293,10 +321,15 @@ class MainWindow(QMainWindow):
             "Shift+R": lambda: self.apply_transform(geo.ROT_CCW),
             "Ctrl+0": self.reset_transform,
             "f": self.toggle_fullscreen,
-            "Ctrl+O": self.open_file,
+            "n": self.play_next,
+            "p": self.play_prev,
+            "Ctrl+L": self.toggle_playlist,
+            "Ctrl+O": self.open_files,
             "Ctrl+E": self.export_audio,
             "Ctrl+I": lambda: self.open_effects(0),
             "Ctrl+Shift+E": lambda: self.open_effects(1),
+            "Shift+Left": lambda: self.seek_rel(-SEEK_STEP_MS),
+            "Shift+Right": lambda: self.seek_rel(SEEK_STEP_MS),
         }
         for seq, fn in shortcuts.items():
             QShortcut(QKeySequence(seq), self, activated=fn)
@@ -305,21 +338,29 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=lambda: self.seek_rel(5000))
         QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self._escape)
 
-        self._build_player()
+        self.player.audio_set_volume(self.vol.value())
+        fx.apply_equalizer(vlc, self.player, self.eq)
 
         self.timer = QTimer(self)
-        self.timer.setInterval(250)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._poll)
         self.timer.start()
 
         self._apply_style()
+        # que los botones no se encojan (el texto se cortaría con la lista
+        # abierta); se mide después de aplicar el estilo, que agrega relleno
+        for b in self._fixed_buttons:
+            b.ensurePolished()
+            b.setMinimumWidth(b.sizeHint().width())
+        self._restore_playlist()
+        self.resizeDocks([self.dock], [270], Qt.Horizontal)
         self._update_state_label()
 
     # ------------------------------------------------------------------ UI --
     def _build_menu(self):
         mb = self.menuBar()
         m_file = mb.addMenu("&Archivo")
-        m_file.addAction("Abrir…\tCtrl+O", self.open_file)
+        m_file.addAction("Abrir…\tCtrl+O", self.open_files)
         m_file.addAction("Exportar audio…\tCtrl+E", self.export_audio)
         m_file.addSeparator()
         m_file.addAction("Elegir carpeta de capturas…", self.choose_captures_dir)
@@ -327,8 +368,19 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         m_file.addAction("Salir", self.close)
 
+        m_play = mb.addMenu("&Reproducción")
+        m_play.addAction("Play / Pausa\tEspacio", self.toggle_play)
+        m_play.addAction("Detener", self.stop)
+        m_play.addAction("Retroceder 10 s\tShift+←", lambda: self.seek_rel(-SEEK_STEP_MS))
+        m_play.addAction("Adelantar 10 s\tShift+→", lambda: self.seek_rel(SEEK_STEP_MS))
+        m_play.addSeparator()
+        m_play.addAction("Anterior\tp", self.play_prev)
+        m_play.addAction("Siguiente\tn", self.play_next)
+        m_play.addAction("Lista de reproducción\tCtrl+L", self.toggle_playlist)
+
         m_video = mb.addMenu("&Video")
         m_video.addAction("Zoom por recuadro\tz", self.toggle_zoom)
+        m_video.addAction("Zoom All (video completo)\ta", self.zoom_all)
         m_video.addAction("Deshacer nivel de zoom\tShift+Z", self.zoom_out_one)
         m_video.addSeparator()
         m_video.addAction("Espejo horizontal\th", lambda: self.apply_transform(geo.HFLIP))
@@ -352,7 +404,9 @@ class MainWindow(QMainWindow):
             self, APP_TITLE,
             f"<b>{APP_TITLE}</b> {__version__}<br>"
             f"libVLC {vlc.libvlc_get_version().decode(errors='replace')}<br><br>"
-            "Reproductor con zoom por recuadro, espejo, rotación y captura."))
+            "Reproductor con zoom por recuadro, espejo, rotación, captura, "
+            "lista de reproducción, ajustes de imagen, ecualizador y "
+            "exportación de audio."))
 
     def _apply_style(self):
         self.setStyleSheet("""
@@ -371,6 +425,11 @@ class MainWindow(QMainWindow):
             QLabel { padding:0 4px; }
             QStatusBar { background:#14161a; }
             QToolTip { background:#22262c; color:#e8e8e8; border:1px solid #3c414a; }
+            QDockWidget::title { background:#14161a; padding:6px; }
+            QListWidget { background:#15171b; alternate-background-color:#1b1e23;
+                          border:1px solid #3c414a; }
+            QListWidget::item:selected { background:#0b6fa4; }
+            QRubberBand { border:2px solid #7fd4ff; background:rgba(127,212,255,40); }
         """)
 
     def _update_state_label(self):
@@ -384,68 +443,55 @@ class MainWindow(QMainWindow):
         if self.eq.enabled:
             parts.append("EQ")
         self.lbl_state.setText("  ·  ".join(parts))
-        self.btn_zoom.setChecked(bool(self.zoom_stack) or self.video_frame.armed)
+        self.btn_zoom.setChecked(self.video.armed)
+        self.btn_zoom_all.setEnabled(bool(self.zoom_stack))
 
-    # ------------------------------------------------------------ libVLC --
-    def _build_player(self):
-        """Crea instancia y reproductor. El filtro de espejo/rotación de VLC
-        solo funciona como opción de instancia, así que cambiar la
-        orientación implica recrearlos."""
-        args = ["--no-video-title-show", "--no-snapshot-preview", "--no-osd", "--quiet"]
-        ttype = geo.vlc_transform_type(self.transform)
-        if ttype:
-            args += ["--video-filter=transform", f"--transform-type={ttype}"]
-        self.instance = vlc.Instance(*args)
-        if self.instance is None:
-            raise RuntimeError("libVLC no pudo inicializarse")
-        self.player = self.instance.media_player_new()
-        # Sin esto, en Windows la ventana de VLC se queda con el mouse y el
-        # teclado, y el recuadro de zoom / doble clic no llegan a Qt.
-        self.player.video_set_mouse_input(False)
-        self.player.video_set_key_input(False)
-        wid = int(self.video_frame.winId())
-        if sys.platform.startswith("win"):
-            self.player.set_hwnd(wid)
-        elif sys.platform == "darwin":
-            self.player.set_nsobject(wid)
-        else:
-            self.player.set_xwindow(wid)
-        self.player.audio_set_volume(self.vol.value())
-        fx.apply_equalizer(vlc, self.player, self.eq)
-
-    def _release_player(self):
-        if self.player is not None:
-            self.player.stop()
-            self.player.release()
-        if self.instance is not None:
-            self.instance.release()
-        self.player = None
-        self.instance = None
-
+    # ---------------------------------------------------------- reproductor --
     def _has_video(self) -> bool:
-        if self.player is None or self.media_path is None:
+        if self.media_path is None:
             return False
         if self.player.get_state() not in (vlc.State.Playing, vlc.State.Paused):
             return False
-        w, h = self._source_size()
+        w, h = self.frames.frame_size()
         return bool(w and h)
 
-    def _source_size(self):
-        try:
-            size = self.player.video_get_size(0)
-        except Exception:  # noqa: BLE001 — sin pista de video
-            return 0, 0
-        return size if size else (0, 0)
-
     # --------------------------------------------------------------- media --
-    def open_file(self):
+    def open_files(self):
         start = self.settings.value("last_dir", "")
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Abrir archivo multimedia", start,
-            f"Formatos VLC ({VLC_EXTENSIONS});;Todos los archivos (*.*)")
-        if path:
-            self.settings.setValue("last_dir", os.path.dirname(path))
-            self.load(path)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Abrir archivos (se agregan a la lista)", start,
+            f"Formatos VLC ({VLC_EXTENSIONS} *.m3u *.m3u8);;Todos los archivos (*.*)")
+        if paths:
+            self.settings.setValue("last_dir", os.path.dirname(paths[0]))
+            self.add_and_play(paths)
+
+    def add_and_play(self, paths):
+        first = self.playlist.add_paths(expand_paths(paths))
+        if first is not None:
+            self.play_index(first)
+
+    def play_index(self, index: int):
+        path = self.playlist.path_at(index)
+        if path is None:
+            return
+        self.playlist.set_current(index)
+        self.load(path)
+
+    def play_next(self):
+        i = self.playlist.next_index()
+        if i is not None:
+            self.play_index(i)
+        else:
+            self.statusBar().showMessage("No hay siguiente en la lista", 3000)
+
+    def play_prev(self):
+        # como en los reproductores habituales: si ya avanzó, vuelve al inicio
+        if self.media_path and self.player.get_time() > 3000:
+            self.player.set_time(0)
+            return
+        i = self.playlist.prev_index()
+        if i is not None:
+            self.play_index(i)
 
     def load(self, path: str):
         if not path:
@@ -455,18 +501,22 @@ class MainWindow(QMainWindow):
             return
         self.media_path = path
         self.zoom_stack.clear()
-        self.video_frame.arm_selection(False)
-        self._restore = None
+        self.video.arm_selection(False)
+        self.video.set_view(geo.FULL_VIEW)
+        self.frames.clear()
         self.player.set_media(self.instance.media_new(path))
         self.player.play()
-        self._crop_pending = True
+        self._vout_pending = True
         self.setWindowTitle(f"{APP_TITLE} — {os.path.basename(path)}")
         self.statusBar().showMessage(f"Reproduciendo: {path}", 5000)
         self._update_state_label()
 
     def toggle_play(self):
         if self.media_path is None:
-            self.open_file()
+            if self.playlist.count():
+                self.play_index(self.playlist.current_index() or 0)
+            else:
+                self.open_files()
             return
         st = self.player.get_state()
         if st == vlc.State.Playing:
@@ -474,17 +524,18 @@ class MainWindow(QMainWindow):
         elif st in (vlc.State.Ended, vlc.State.Stopped, vlc.State.Error):
             self.player.stop()
             self.player.play()
-            self._crop_pending = True
+            self._vout_pending = True
         else:
             self.player.play()
 
     def stop(self):
         self.player.stop()
+        self.frames.clear()
 
     def seek_rel(self, delta_ms: int):
         t, length = self.player.get_time(), self.player.get_length()
         if t >= 0 and length > 0:
-            self.player.set_time(max(0, min(length - 100, t + delta_ms)))
+            self.player.set_time(max(0, min(length - 200, t + delta_ms)))
 
     def _seek_slider(self, value):
         length = self.player.get_length()
@@ -506,24 +557,45 @@ class MainWindow(QMainWindow):
         if self.isFullScreen():
             self.showNormal()
             self.menuBar().show()
+            self.statusBar().show()
+            if self._dock_was_visible:
+                self.dock.show()
         else:
+            self._dock_was_visible = self.dock.isVisible()
             self.menuBar().hide()
+            self.statusBar().hide()
+            self.dock.hide()
             self.showFullScreen()
 
     def _escape(self):
-        if self.video_frame.armed:
-            self.video_frame.cancel_selection()
+        if self.video.armed:
+            self.video.cancel_selection()
         elif self.isFullScreen():
             self.toggle_fullscreen()
 
+    def toggle_playlist(self):
+        self.dock.setVisible(not self.dock.isVisible())
+
+    def _save_playlist(self):
+        self.settings.setValue("playlist/paths", self.playlist.paths())
+        cur = self.playlist.current_index()
+        self.settings.setValue("playlist/current", -1 if cur is None else cur)
+
+    def _restore_playlist(self):
+        paths = self.settings.value("playlist/paths", []) or []
+        if isinstance(paths, str):
+            paths = [paths]
+        self.playlist.add_paths(paths)
+        self.dock.setVisible(self.settings.value("playlist/visible", "false") in ("true", True))
+        self._dock_was_visible = self.dock.isVisible()
+
     # ---------------------------------------------------------------- poll --
     def _poll(self):
-        if self.player is None:
-            return
         st = self.player.get_state()
         playing = st in (vlc.State.Playing, vlc.State.Buffering, vlc.State.Opening)
-        self.btn_play.setIcon(self.style().standardIcon(
-            QStyle.SP_MediaPause if playing else QStyle.SP_MediaPlay))
+        if playing != getattr(self, "_icon_playing", None):
+            self._icon_playing = playing
+            self.btn_play.setIcon(media_icon("pause" if playing else "play"))
         length, t = self.player.get_length(), self.player.get_time()
         self.lbl_time.setText(f"{ms_to_str(t)} / {ms_to_str(length)}")
         if length > 0 and not self._slider_pressed:
@@ -531,19 +603,28 @@ class MainWindow(QMainWindow):
             self.slider.setValue(1000 if st == vlc.State.Ended
                                  else int(1000 * max(0, t) / length))
             self.slider.blockSignals(False)
-        # Al reiniciar la reproducción VLC crea una salida de video nueva y
-        # olvida el recorte: lo reaplicamos en cuanto hay dimensiones.
         if self.zoom_stack:
             self._update_state_label()       # el aumento cambia al redimensionar
-        if self._crop_pending and self._has_video():
-            self._crop_pending = False
-            self._schedule_crop()
+        if self._vout_pending and self._has_video():
+            self._vout_pending = False
+            self._on_new_video()
+        # al terminar un archivo, pasar al siguiente de la lista
+        if st == vlc.State.Ended and self._last_state != vlc.State.Ended:
+            nxt = self.playlist.next_index()
+            if nxt is not None:
+                QTimer.singleShot(0, lambda: self.play_index(nxt))
+        self._last_state = st
+
+    def _on_new_video(self):
+        """Primera imagen de un archivo: aplicar los ajustes de imagen."""
+        self._apply_video_effects(force=True)
+        QTimer.singleShot(600, lambda: self._apply_video_effects(force=True))
+        self._update_state_label()
 
     # ---------------------------------------------------------------- zoom --
     def _disp_size(self):
         """Tamaño de la imagen ya transformada (rotada/reflejada)."""
-        w, h = self._source_size()
-        return geo.transformed_size(w, h, self.transform)
+        return self.video.display_size()
 
     def _current_view(self) -> geo.Rect:
         """Zona visible, como fracción de la imagen transformada."""
@@ -557,61 +638,42 @@ class MainWindow(QMainWindow):
         if not self.zoom_stack or not dw or not dh:
             return 1.0
         vw, vh = geo.view_pixel_size(self._current_view(), dw, dh)
-        fw, fh = max(1, self.video_frame.width()), max(1, self.video_frame.height())
+        fw, fh = max(1, self.video.width()), max(1, self.video.height())
         return geo.fit(fw, fh, vw, vh)[2] / geo.fit(fw, fh, dw, dh)[2]
 
-    def _apply_crop(self):
-        if self.player is None:
-            return
-        src_w, src_h = self._source_size()
-        geometry = None
-        if self.zoom_stack and src_w and src_h:
-            geometry = geo.crop_borders(self._current_view(), src_w, src_h)
-        vlc.libvlc_video_set_crop_geometry(
-            self.player, geometry.encode("ascii") if geometry else None)
-
-    def _schedule_crop(self):
-        """Aplica el recorte ahora y lo reafirma unos instantes después: tras
-        un seek o al recrear el reproductor, VLC puede crear una salida de
-        video nueva que ignora el recorte fijado antes."""
-        self._apply_crop()
-        for delay in (300, 800, 1600):
-            QTimer.singleShot(delay, self._apply_crop)
-        # los ajustes de imagen viven en la salida de video: misma situación
-        self._apply_video_effects(force=True)
-        for delay in (800, 1600):
-            QTimer.singleShot(delay, lambda: self._apply_video_effects(force=True))
-
-    def _apply_video_effects(self, force: bool = False):
-        fx.apply_adjust(vlc, self.player, self.adjust, force)
+    def _apply_view(self):
+        self.video.set_view(self._current_view())
+        self._update_state_label()
 
     def toggle_zoom(self):
-        if self.video_frame.armed:
-            self.video_frame.cancel_selection()
-        elif self.zoom_stack:
-            self.reset_zoom()
-            self.statusBar().showMessage("Zoom desactivado", 3000)
+        if self.video.armed:
+            self.video.cancel_selection()
         elif not self._has_video():
             self.statusBar().showMessage("Primero reproduce un video para usar el zoom", 4000)
         else:
-            self.video_frame.arm_selection(True)
+            self.video.arm_selection(True)
             self.statusBar().showMessage(
-                "Modo zoom: arrastra con el mouse el recuadro a ampliar "
-                "(Esc, clic derecho o 'z' para cancelar)")
+                "Modo zoom: arrastra el recuadro a ampliar; mantiene la proporción del video "
+                "(Esc o clic derecho para cancelar)")
         self._update_state_label()
+
+    def zoom_all(self):
+        """Zoom All: volver a ver el video completo."""
+        self.video.arm_selection(False)
+        if self.zoom_stack:
+            self.zoom_stack.clear()
+            self._apply_view()
+            self.statusBar().showMessage("Zoom All: video completo", 3000)
+        self._update_state_label()
+
+    def reset_zoom(self):
+        self.zoom_all()
 
     def zoom_out_one(self):
         if self.zoom_stack:
             self.zoom_stack.pop()
-            self._apply_crop()
-            self._update_state_label()
+            self._apply_view()
             self.statusBar().showMessage("Nivel de zoom anterior", 3000)
-
-    def reset_zoom(self):
-        self.zoom_stack.clear()
-        self.video_frame.arm_selection(False)
-        self._apply_crop()
-        self._update_state_label()
 
     def _on_zoom_cancelled(self):
         self._update_state_label()
@@ -622,14 +684,15 @@ class MainWindow(QMainWindow):
         self._update_state_label()
         if ok:
             self.statusBar().showMessage(
-                f"Zoom ×{self._zoom_factor():.1f} — 'z' para quitarlo, "
-                "Shift+Z para volver un nivel, o 'z' de nuevo tras quitarlo para otra zona", 6000)
+                f"Zoom ×{self._zoom_factor():.1f} — 'z' para ampliar más, "
+                "Shift+Z para volver un nivel, 'a' (Zoom All) para el video completo", 6000)
         else:
             self.statusBar().showMessage(f"No se pudo aplicar el zoom: {msg}", 5000)
 
     def zoom_to_widget_rect(self, rect: QRect):
         """Amplía la zona `rect` (píxeles del área de video). Funciona también
-        sobre una zona ya ampliada (zoom anidado)."""
+        sobre una zona ya ampliada (zoom anidado). La imagen se dibuja siempre
+        con su proporción: nunca se deforma."""
         if not self._has_video():
             return False, "no hay video en reproducción"
         disp_w, disp_h = self._disp_size()
@@ -637,14 +700,14 @@ class MainWindow(QMainWindow):
         vis_w, vis_h = geo.view_pixel_size(view, disp_w, disp_h)
         sub = geo.widget_rect_to_fraction(
             (rect.x(), rect.y(), rect.width(), rect.height()),
-            self.video_frame.width(), self.video_frame.height(), vis_w, vis_h)
+            self.video.width(), self.video.height(), vis_w, vis_h)
         if sub is None:
             return False, "el recuadro está fuera de la imagen"
         new_view = geo.compose_view(view, sub)
         if new_view[2] * disp_w < MIN_ZOOM_SRC_PX or new_view[3] * disp_h < MIN_ZOOM_SRC_PX:
             return False, "zona demasiado pequeña"
         self.zoom_stack.append(geo.map_rect(new_view, geo.inverse(self.transform)))
-        self._apply_crop()
+        self._apply_view()
         return True, ""
 
     # ---------------------------------------------------- espejo / rotación --
@@ -655,58 +718,15 @@ class MainWindow(QMainWindow):
         self.set_transform(geo.IDENTITY)
 
     def set_transform(self, matrix: geo.Matrix):
+        """Instantáneo: lo hace Qt al dibujar (no se recrea el reproductor).
+        El zoom se conserva porque se guarda en la orientación original."""
         if matrix == self.transform:
             return
-        self.video_frame.arm_selection(False)
-        state = self.player.get_state() if self.player else None
-        resume = None
-        if self.media_path and state in (vlc.State.Playing, vlc.State.Paused,
-                                         vlc.State.Buffering, vlc.State.Opening):
-            resume = {"time": max(0, self.player.get_time()),
-                      "paused": state == vlc.State.Paused, "tries": 100}
+        self.video.arm_selection(False)
         self.transform = matrix
-        self._release_player()
-        self._build_player()
-        if self.media_path:
-            self.player.set_media(self.instance.media_new(self.media_path))
-            self._crop_pending = True
-        if resume:
-            self.player.audio_set_mute(True)
-            self.player.play()
-            self._restore = resume
-            QTimer.singleShot(40, self._restore_step)
-        self._update_state_label()
+        self.video.set_transform(matrix)
+        self._apply_view()
         self.statusBar().showMessage(f"Orientación: {geo.describe(matrix)}", 3000)
-
-    def _restore_step(self):
-        r = self._restore
-        if r is None or self.player is None:
-            return
-        if self._has_video() and self.player.get_length() > 0:
-            self._restore = None
-            self.player.set_time(r["time"])
-            self._crop_pending = False
-            self._schedule_crop()
-            if r["paused"]:
-                QTimer.singleShot(180, lambda: self._ensure_paused(10))
-            QTimer.singleShot(200, lambda: self.player.audio_set_mute(False))
-            return
-        r["tries"] -= 1
-        if r["tries"] > 0:
-            QTimer.singleShot(40, self._restore_step)
-        else:
-            self._restore = None
-            self.player.audio_set_mute(False)
-
-    def _ensure_paused(self, tries):
-        """Vuelve a pausar tras recrear el reproductor (VLC a veces ignora la
-        primera pausa mientras termina el salto de posición)."""
-        if self.player is None or self._restore is not None:
-            return
-        if self.player.get_state() != vlc.State.Paused:
-            self.player.set_pause(1)
-            if tries > 0:
-                QTimer.singleShot(150, lambda: self._ensure_paused(tries - 1))
 
     # ------------------------------------------------------------ captura --
     def captures_dir(self) -> str:
@@ -724,10 +744,14 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(d))
 
     def snapshot(self):
-        """Guarda un PNG de exactamente lo que se ve: zona ampliada, espejo y
-        rotación incluidos, a la resolución real de esa zona del video."""
+        """Guarda un PNG de exactamente lo que se ve (zona ampliada, espejo,
+        rotación y ajustes de imagen) a la resolución real de esa zona."""
         if not self._has_video():
             self.statusBar().showMessage("No hay video en reproducción para capturar", 4000)
+            return None
+        img = self.video.render_view()
+        if img is None:
+            self.statusBar().showMessage("Todavía no hay imagen para capturar", 4000)
             return None
         folder = self.captures_dir()
         try:
@@ -739,24 +763,11 @@ class MainWindow(QMainWindow):
         t = self.player.get_time()
         stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
         path = os.path.join(folder, f"{base}_{ms_to_str(t).replace(':', '-')}_{stamp}.png")
-        disp_w, disp_h = self._disp_size()
-        # Hay que pasar el tamaño explícito: con 0×0 VLC usa las medidas del
-        # video original y la imagen sale deformada al rotar o ampliar.
-        w, h = geo.view_pixel_size(self._current_view(), disp_w, disp_h)
-        ret = vlc.libvlc_video_take_snapshot(self.player, 0, path.encode("utf-8"), w, h)
-        if ret != 0:
+        if not img.save(path, "PNG"):
             self.statusBar().showMessage("Error al guardar la captura", 5000)
             return None
-        self._confirm_snapshot(path, 25)
+        self.statusBar().showMessage(f"📷 Captura guardada: {path}", 6000)
         return path
-
-    def _confirm_snapshot(self, path, tries):
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            self.statusBar().showMessage(f"📷 Captura guardada: {path}", 6000)
-        elif tries > 0:
-            QTimer.singleShot(120, lambda: self._confirm_snapshot(path, tries - 1))
-        else:
-            self.statusBar().showMessage("La captura tardó demasiado; inténtalo de nuevo", 5000)
 
     # ----------------------------------------------------------- drag&drop --
     def dragEnterEvent(self, e):
@@ -764,16 +775,13 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        for url in e.mimeData().urls():
-            path = url.toLocalFile() or url.toString()
-            if path:
-                self.load(path)
-                break
+        paths = [u.toLocalFile() or u.toString() for u in e.mimeData().urls()]
+        self.add_and_play([p for p in paths if p])
 
     # ------------------------------------------------------ exportar audio --
     def _audio_tracks(self):
         """Pistas de audio del medio actual: [(id, nombre)], id actual."""
-        if self.player is None or self.media_path is None:
+        if self.media_path is None:
             return [], None
         try:
             desc = self.player.audio_get_track_description() or []
@@ -790,16 +798,14 @@ class MainWindow(QMainWindow):
         return tracks, (current if current >= 0 else None)
 
     def export_audio(self):
-        if getattr(self, "_exporter", None) is not None:
+        if self._exporter is not None:
             self.statusBar().showMessage("Ya hay una exportación en curso", 4000)
             return
         tracks, current = self._audio_tracks()
-        t = self.player.get_time() if self.player else 0
-        length = self.player.get_length() if self.player and self.media_path else 0
-        dlg = ExportAudioDialog(
-            self, self.settings, self.media_path,
-            f"Formatos VLC ({VLC_EXTENSIONS});;Todos los archivos (*.*)",
-            tracks, current, max(0, t), max(0, length))
+        t = self.player.get_time()
+        length = self.player.get_length() if self.media_path else 0
+        dlg = ExportAudioDialog(self, self.settings, self.media_path, MEDIA_FILTER,
+                                tracks, current, max(0, t), max(0, length))
         if dlg.exec_() != dlg.Accepted:
             return
         job = dlg.job
@@ -860,16 +866,16 @@ class MainWindow(QMainWindow):
         self._fx_dialog.sync_from_state()
         self._fx_dialog.show_tab(tab)
 
+    def _apply_video_effects(self, force: bool = False):
+        fx.apply_adjust(vlc, self.player, self.adjust, force)
+
     def _on_adjust_changed(self):
         # Al pasar de inactivo a activo se fuerza el encendido del filtro; al
-        # mover un control con el filtro ya activo solo se cambian valores
-        # (forzar en cada movimiento haría parpadear el video).
+        # mover un control con el filtro ya activo solo se cambian valores.
         turning_on = self.adjust.active and not self._adjust_was_active
         self._adjust_was_active = self.adjust.active
         self._apply_video_effects(force=turning_on)
         if turning_on:
-            # VLC puede estar terminando de crear la salida de video (tras
-            # girar o abrir un archivo): se reafirma medio segundo después.
             QTimer.singleShot(500, lambda: self._apply_video_effects(force=True))
         self.settings.setValue("fx/adjust", self.adjust.to_json())
         self._update_state_label()
@@ -880,11 +886,16 @@ class MainWindow(QMainWindow):
         self._update_state_label()
 
     def closeEvent(self, e):
-        if getattr(self, "_exporter", None) is not None:
+        if self._exporter is not None:
             self._exporter.cancel()
             self._exporter = None
+        self.settings.setValue("playlist/visible", self.dock.isVisible())
+        self._save_playlist()
         self.timer.stop()
-        self._release_player()
+        self.player.stop()
+        self.frames.detach()
+        self.player.release()
+        self.instance.release()
         super().closeEvent(e)
 
 
@@ -904,5 +915,5 @@ def main(argv=None):
     win.show()
     files = [a for a in argv[1:] if not a.startswith("-")]
     if files:
-        QTimer.singleShot(0, lambda: win.load(files[0]))
+        QTimer.singleShot(0, lambda: win.add_and_play(files))
     return app.exec_()

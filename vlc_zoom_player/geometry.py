@@ -19,12 +19,9 @@ Convenciones
   relativos a la imagen completa. El zoom se guarda en la orientación
   ORIGINAL del video, de modo que se conserva al rotar o reflejar.
 
-* VLC 3 aplica ``crop_geometry`` en un espacio "virtual" con las
-  dimensiones del video original, proyectado proporcionalmente sobre la
-  imagen ya transformada. Por eso el recorte se calcula como fracción de la
-  imagen visible multiplicada por el tamaño original. Además se usa la
-  sintaxis de márgenes ``izq+arr+der+aba``: la sintaxis ``AxH+X+Y`` de
-  VLC 3.0 ubica mal la región.
+* El dibujo (``video_view.py``) usa estas funciones para encajar la zona
+  visible con su proporción (franjas negras si hace falta): la imagen nunca
+  se deforma.
 """
 
 from __future__ import annotations
@@ -148,26 +145,7 @@ def compose_view(view: Rect, sub: Rect) -> Rect:
     return (vx + sx * vw, vy + sy * vh, sw * vw, sh * vh)
 
 
-# ---------------------------------------------------------------------- VLC --
-def _even(v: float) -> int:
-    v = int(round(v))
-    return v - (v % 2)
-
-
-def crop_borders(view: Rect, src_w: int, src_h: int) -> Optional[str]:
-    """Cadena de recorte por márgenes ``izq+arr+der+aba`` para
-    ``libvlc_video_set_crop_geometry``. None si la vista es la imagen entera."""
-    x, y, w, h = view
-    left = _even(x * src_w)
-    top = _even(y * src_h)
-    right = _even(src_w - (x + w) * src_w)
-    bottom = _even(src_h - (y + h) * src_h)
-    left, top, right, bottom = (max(0, v) for v in (left, top, right, bottom))
-    if left == top == right == bottom == 0:
-        return None
-    return f"{left}+{top}+{right}+{bottom}"
-
-
+# ------------------------------------------------------------------ captura --
 def view_pixel_size(view: Rect, disp_w: int, disp_h: int) -> Tuple[int, int]:
     """Tamaño en píxeles reales de la zona visible (para la captura)."""
     return (max(1, int(round(view[2] * disp_w))),

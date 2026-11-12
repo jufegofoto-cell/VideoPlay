@@ -2,20 +2,21 @@
 
 Reproductor de video para escritorio basado en **libVLC** (el motor de VLC) con funciones pensadas para analizar imágenes en movimiento:
 
-- **Zoom por recuadro**: dibujas con el mouse un recuadro sobre el video y esa zona pasa a ocupar todo el reproductor, en vivo. Se puede ampliar de nuevo dentro de una zona ya ampliada (zoom anidado) y volver nivel por nivel.
-- **Espejo** horizontal y vertical.
-- **Rotación** de 90° en ambos sentidos. Se combina con el espejo y con el zoom: la zona ampliada se conserva al girar.
-- **Captura de lo que se ve**: guarda un PNG con el zoom, el espejo y la rotación aplicados, a la resolución real de esa zona del video (no es un pantallazo).
-- **Ajustes de imagen** en vivo: brillo, contraste, saturación, tono y gamma, con atajos como "Blanco y negro". Los ajustes también salen en las capturas.
-- **Ecualizador de audio** de 10 bandas (31 Hz a 16 kHz) con preamplificador y 18 presets (Rock, Pop, Clásica, Graves…).
-- **Exportar audio** de cualquier archivo que VLC pueda abrir (video o audio) a MP3, AAC (M4A), Ogg Vorbis, Opus, WAV o FLAC. Se puede exportar el archivo completo o un fragmento, elegir la pista de audio, la calidad y mono o estéreo, todo sin detener la reproducción.
+- **Zoom por recuadro (zoom window)**: dibujas con el mouse un recuadro sobre el video y esa zona pasa a ocupar todo el reproductor, en vivo. El recuadro mantiene la proporción del video y la imagen nunca se deforma. Se puede ampliar dentro de una zona ya ampliada (zoom anidado), volver un nivel o pulsar **Zoom All** para ver el video completo.
+- **Espejo** horizontal y vertical, y **rotación** de 90° en ambos sentidos. Son instantáneos y se combinan con el zoom.
+- **Captura de lo que se ve**: guarda un PNG con el zoom, el espejo, la rotación y los ajustes de imagen, a la resolución real de esa zona del video (no es un pantallazo).
+- **Lista de reproducción**: panel lateral para agregar, quitar y reordenar archivos, pasar al siguiente automáticamente, repetir la lista y guardar o abrir listas `.m3u`.
+- **Controles de reproducción**: anterior y siguiente de la lista, atrasar y adelantar 10 s, play/pausa y detener.
+- **Ajustes de imagen** en vivo: brillo, contraste, saturación, tono y gamma.
+- **Ecualizador de audio** de 10 bandas (31 Hz a 16 kHz) con preamplificador y 18 presets.
+- **Exportar audio** de cualquier archivo que VLC pueda abrir a MP3, AAC (M4A), Ogg Vorbis, Opus, WAV o FLAC, completo o por fragmento.
 - Reproduce todo lo que reproduce VLC. Se pueden arrastrar archivos a la ventana y abrirlos con "Abrir con…" desde el Explorador.
 
-![Selección del recuadro de zoom](docs/seleccion_zoom.png)
+![Interfaz con la lista de reproducción](docs/interfaz.png)
 
-| Original | Espejo + rotación + zoom |
+| Selección del recuadro | Resultado del zoom |
 |---|---|
-| ![original](docs/original.png) | ![transformado](docs/espejo_rotado_zoom.png) |
+| ![selección](docs/seleccion_zoom.png) | ![zoom](docs/zoom.png) |
 
 ## Requisitos
 
@@ -30,7 +31,7 @@ Reproductor de video para escritorio basado en **libVLC** (el motor de VLC) con 
 1. Instala VLC desde <https://www.videolan.org/>.
 2. Instala Python desde <https://www.python.org/> y marca "Add python.exe to PATH".
 3. Descarga o clona este repositorio y ejecuta **`instalar.bat`**. Crea `.venv` e instala las dependencias.
-4. Abre la app con **`ejecutar.bat`**. También puedes arrastrar un video sobre `ejecutar.bat` o usarlo en "Abrir con…".
+4. Abre la app con **`ejecutar.bat`**. También puedes arrastrar videos sobre `ejecutar.bat` o usarlo en "Abrir con…".
 
 Si VLC está instalado en una carpeta no estándar, define la variable de entorno `VLC_DIR` con esa ruta.
 
@@ -40,18 +41,21 @@ Si VLC está instalado en una carpeta no estándar, define la variable de entorn
 sudo apt install vlc            # o el equivalente de tu distribución
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m vlc_zoom_player [video.mp4]
+.venv/bin/python -m vlc_zoom_player [video.mp4 ...]
 ```
 
 ### Ejecutable de Windows (sin instalar Python)
 
-GitHub Actions (`.github/workflows/ci.yml`) **no se ejecuta automáticamente**. Para lanzarlo: pestaña **Actions → CI → Run workflow**. Corre las pruebas y, si dejas marcada la opción "Generar el ejecutable de Windows", crea **VLCZoomPlayer-windows.zip**. Se descarga desde esa misma ejecución, en la sección *Artifacts*. Si escribes una versión (por ejemplo `v0.4.0`), el zip se publica además como *Release*. El ejecutable usa el VLC de 64 bits instalado en el equipo.
+GitHub Actions (`.github/workflows/ci.yml`) **no se ejecuta automáticamente**. Para lanzarlo: pestaña **Actions → CI → Run workflow**. Corre las pruebas y, si dejas marcada la opción "Generar el ejecutable de Windows", crea **VLCZoomPlayer-windows.zip**. Se descarga desde esa misma ejecución, en la sección *Artifacts*. Si escribes una versión (por ejemplo `v0.5.0`), el zip se publica además como *Release*. El ejecutable usa el VLC de 64 bits instalado en el equipo.
 
 ## Uso
 
+Los botones de la barra inferior, de izquierda a derecha: abrir · anterior, atrasar 10 s, play/pausa, adelantar 10 s, siguiente, detener · **Zoom**, **Zoom All** · espejo horizontal, espejo vertical, rotar ⟲, rotar ⟳ · captura 📷, exportar audio 🎵, ajustes 🎛, **☰ Lista** · volumen.
+
 | Tecla | Acción |
 |---|---|
-| `z` | Zoom: dibujar recuadro (o quitar el zoom si ya está activo) |
+| `z` | Zoom: dibujar recuadro |
+| `a` | Zoom All: volver al video completo |
 | `Shift+Z` | Volver al nivel de zoom anterior |
 | `s` | Captura de lo que se ve (PNG) |
 | `h` / `v` | Espejo horizontal / vertical |
@@ -59,27 +63,44 @@ GitHub Actions (`.github/workflows/ci.yml`) **no se ejecuta automáticamente**. 
 | `Ctrl+0` | Restablecer orientación |
 | `Espacio` | Play / Pausa |
 | `←` / `→` | Retroceder / avanzar 5 s |
+| `Shift+←` / `Shift+→` | Retroceder / avanzar 10 s |
+| `p` / `n` | Anterior / siguiente de la lista |
+| `Ctrl+L` | Mostrar / ocultar la lista de reproducción |
 | `f` o doble clic | Pantalla completa |
 | `Esc` / clic derecho | Cancelar selección · salir de pantalla completa |
-| `Ctrl+O` | Abrir archivo |
+| `Ctrl+O` | Abrir archivos (se agregan a la lista) |
 | `Ctrl+E` | Exportar audio |
 | `Ctrl+I` | Ajustes de imagen |
 | `Ctrl+Shift+E` | Ecualizador |
 
 Las capturas se guardan por defecto en `Imágenes/VLC Zoom Player`. La carpeta se cambia en **Archivo → Elegir carpeta de capturas…**. El nombre incluye el video, el minuto del video y la fecha con milisegundos, así que dos capturas seguidas no se sobrescriben.
 
+### Zoom por recuadro
+
+Pulsa **🔍 Zoom** (o `z`) y arrastra sobre el video. El recuadro conserva la proporción de la imagen, así que la zona elegida llena el reproductor sin franjas ni deformación. Puedes repetir el zoom sobre la zona ampliada. **Zoom All** (o `a`) vuelve al video completo, y `Shift+Z` retrocede un nivel. Al cambiar de archivo el zoom se reinicia.
+
+### Lista de reproducción
+
+Botón **☰ Lista** (`Ctrl+L`). Abrir archivos o arrastrarlos a la ventana los agrega a la lista y reproduce el primero. En el panel:
+
+- doble clic para reproducir; arrastrar o usar ↑ ↓ para reordenar; `Supr` o − para quitar;
+- **Repetir**: al terminar el último vuelve al primero;
+- **Abrir lista… / Guardar lista…** en formato `.m3u`.
+
+Al terminar un archivo pasa solo al siguiente. La lista se recuerda al cerrar la app.
+
 ### Ajustes de imagen y ecualizador
 
-Botón **🎛 Ajustes**, **Video → Ajustes de imagen…** (`Ctrl+I`) o **Audio → Ecualizador…** (`Ctrl+Shift+E`). La ventana no bloquea el reproductor: los cambios se ven y se oyen al instante, también con el video en pausa, y se recuerdan para la próxima vez.
+Botón **🎛**, **Video → Ajustes de imagen…** (`Ctrl+I`) o **Audio → Ecualizador…** (`Ctrl+Shift+E`). La ventana no bloquea el reproductor: los cambios se ven y se oyen al instante y se recuerdan para la próxima vez.
 
-- **Imagen:** brillo (0–2), contraste (0–2), saturación (0–3), tono (−180° a +180°) y gamma (0,1–3). Cada control tiene un botón para volver a su valor original, y hay atajos de "Blanco y negro", "Más contraste" y "Más brillo". Los ajustes se mantienen al girar o reflejar el video.
+- **Imagen:** brillo (0–2), contraste (0–2), saturación (0–3), tono (−180° a +180°) y gamma (0,1–3). Cada control tiene un botón para volver a su valor original, y hay atajos de "Blanco y negro", "Más contraste" y "Más brillo".
 - **Ecualizador:** 10 bandas de −20 a +20 dB, preamplificador y presets de VLC. Al mover una banda el preset pasa a "Personalizado".
 
 ![Ajustes de imagen y ecualizador](docs/ajustes.png)
 
 ### Exportar audio
 
-Botón **🎵 Audio**, **Archivo → Exportar audio…** o `Ctrl+E`. El origen es por defecto el archivo que se está reproduciendo, aunque se puede elegir cualquier otro. Opciones:
+Botón **🎵**, **Archivo → Exportar audio…** o `Ctrl+E`. El origen es por defecto el archivo que se está reproduciendo, aunque se puede elegir cualquier otro.
 
 | Opción | Valores |
 |---|---|
@@ -92,51 +113,48 @@ Botón **🎵 Audio**, **Archivo → Exportar audio…** o `Ctrl+E`. El origen e
 
 ![Diálogo de exportación de audio](docs/exportar_audio.png)
 
-La exportación usa el transcodificador de VLC: no requiere ffmpeg ni otras instalaciones. Un archivo de una hora tarda pocos segundos y la ventana muestra el progreso, con opción de cancelar.
+La exportación usa el transcodificador de VLC: no requiere ffmpeg. Un archivo de una hora tarda pocos segundos y la ventana muestra el progreso, con opción de cancelar.
 
 ## Cómo funciona (notas técnicas)
 
-El video se dibuja en la ventana nativa de VLC, que mantiene la aceleración por hardware. Para eso hubo que sortear varias particularidades de libVLC 3:
-
-- **Recorte (zoom).** La sintaxis `AxH+X+Y` de `libvlc_video_set_crop_geometry` ubica mal la región en VLC 3.0. Se usa la sintaxis de márgenes `izq+arr+der+aba`, que sí es exacta. Con espejo o rotación activos, VLC interpreta el recorte en un espacio con las medidas del video original, proyectado proporcionalmente sobre la imagen ya transformada. `geometry.py` hace esa conversión.
-- **Espejo y rotación.** El filtro `transform` de VLC solo se aplica como opción de *instancia*: si se pasa como opción del medio, se ignora. Por eso, al cambiar la orientación se recrea el reproductor y se vuelve al mismo instante, con el mismo volumen, estado de pausa y zoom. Se nota un corte breve. Las 8 combinaciones de espejo y giro se modelan como el grupo diédrico D4 y cada una corresponde a un valor de `--transform-type`.
-- **Captura.** `libvlc_video_take_snapshot` captura la imagen ya recortada y transformada, pero hay que pasarle el ancho y el alto reales de la zona visible. Si se le pasa `0×0` usa las medidas del video original y la imagen sale deformada. También se desactiva `snapshot-preview`, que dibuja una miniatura en la esquina del video.
-- **Selección con el mouse.** La ventana nativa de VLC tapa a los widgets de Qt. El marco del recuadro es una ventana flotante con máscara de contorno, que se ve igual con o sin compositor. Además se desactiva la captura de mouse y teclado de VLC (`video_set_mouse_input(False)`) para que los eventos lleguen a Qt.
-
-- **Exportar audio.** Se crea una instancia de libVLC aparte con una cadena `#transcode{vcodec=none,…}:std{…}`. Se añade `:no-sout-all` porque, sin esa opción, VLC mezcla todas las pistas de audio en el mismo archivo. Con algunos contenedores (MKV) VLC ignora `:start-time` al transcodificar. Por eso, si el fragmento no empieza en 0, se exporta primero a un WAV temporal hasta el final del fragmento, se recorta el inicio y luego se codifica al formato elegido. FLAC va en Ogg porque el FLAC "crudo" de VLC queda sin duración en la cabecera.
-
-- **Ajustes de imagen.** Usan el filtro `adjust` de VLC (`video_set_adjust_*`), que actúa antes de la captura. Al recrear el reproductor VLC ignora "activar" si cree que el filtro ya estaba activo, así que en ese momento la app lo apaga y lo vuelve a encender. Volver a buscar la misma posición para refrescar un video pausado no sirve: recrea la salida de video y se pierde el filtro.
-- **Ecualizador.** Usa `libvlc_audio_equalizer_*` sobre el reproductor. El transcodificador de VLC ignora el filtro de ecualizador, por eso no se aplica al exportar audio.
+- **Dibujo del video.** VLC decodifica el audio y el video y entrega cada fotograma en memoria (callbacks `vmem`, formato RV32). La app lo dibuja con Qt (`video_view.py`). Así el zoom, el espejo y la rotación son transformaciones al dibujar: no dependen de la salida de video de VLC, cuyo recorte (`crop_geometry`) fallaba según el sistema (en Windows con Direct3D dejaba la pantalla en negro), y funcionan igual en Windows y Linux. Un video 1080p usa alrededor de un tercio de un núcleo de CPU. Los videos de más de 4K se reducen a 3840 px de ancho.
+- **Proporción.** La zona visible se encaja siempre con la misma escala horizontal y vertical, con franjas negras si hace falta, y el recuadro de selección se ajusta a la proporción de la imagen. Las 8 combinaciones de espejo y giro se modelan como el grupo diédrico D4 (`geometry.py`).
+- **Formato de los fotogramas.** python-vlc declara el parámetro de formato como una copia (`c_char_p`), y así no se puede pedir RV32. Por eso la app define su propio prototipo de `libvlc_video_set_format_callbacks`. VLC agrega filas de relleno abajo; se dibuja solo el tamaño visible (`video_get_size`).
+- **Captura.** Se genera con los mismos píxeles y la misma transformación que se ven en pantalla, a la resolución real de la zona visible.
+- **Ajustes de imagen.** Usan el filtro `adjust` de VLC (`video_set_adjust_*`), que actúa antes de entregar el fotograma, así que se ven y se capturan. Cuando VLC crea una salida de video nueva ignora "activar" si cree que el filtro ya estaba activo; en ese momento la app lo apaga y lo vuelve a encender.
+- **Ecualizador.** Usa `libvlc_audio_equalizer_*`. El transcodificador de VLC ignora el filtro de ecualizador, por eso no se aplica al exportar audio.
+- **Exportar audio.** Instancia de libVLC aparte con `#transcode{vcodec=none,…}:std{…}` y `:no-sout-all`, porque sin esa opción VLC mezcla todas las pistas de audio en el mismo archivo. Con algunos contenedores (MKV) VLC ignora `:start-time` al transcodificar. Por eso, si el fragmento no empieza en 0, se exporta a un WAV temporal, se recorta el inicio y luego se codifica al formato elegido.
 
 ```
 vlc_zoom_player/
-  app.py          ventana principal, reproductor y acciones
-  effects.py      estado y aplicación de ajustes de imagen y ecualizador
+  app.py            ventana principal, controles y acciones
+  video_view.py     recepción de fotogramas de libVLC y dibujo con zoom/espejo/rotación
+  playlist.py       panel de lista de reproducción (.m3u)
+  geometry.py       matemática pura de zoom, espejo y rotación
+  effects.py        estado y aplicación de ajustes de imagen y ecualizador
   effects_dialog.py ventana "Ajustes" (pestañas Imagen y Ecualizador)
-  audio_export.py exportación de audio con el transcodificador de libVLC
+  audio_export.py   exportación de audio con el transcodificador de libVLC
   export_dialog.py  diálogo "Exportar audio"
-  geometry.py     matemática pura de zoom, espejo y rotación (sin Qt ni VLC)
-  vlc_loader.py   localiza libVLC en Windows y muestra un error claro si falta
-tests/            pruebas unitarias (geometría, exportación de audio, efectos)
-tools/smoke_test.py   prueba de extremo a extremo con la app real
+  vlc_loader.py     localiza libVLC en Windows y muestra un error claro si falta
+tests/              pruebas unitarias
+tools/smoke_test.py prueba de extremo a extremo con la app real
 ```
 
 ## Pruebas
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                                    # geometría
-python tools/smoke_test.py video.mp4 salida_prueba  # app real: zoom, giro, espejo, capturas
+python -m pytest                                              # pruebas unitarias
+python tools/smoke_test.py video.mp4 video_corto.mp4 salida   # app real
 ```
 
-La prueba de humo reproduce el video, aplica zoom (incluido el anidado), rotación y espejo con el video en pausa. En cada paso guarda capturas y pantallazos y comprueba que cada captura tenga exactamente las dimensiones de la zona visible.
+La prueba de extremo a extremo reproduce los videos y prueba la selección con el mouse (proporción del recuadro), el zoom anidado, Zoom All, adelantar y atrasar, la rotación y el espejo en pausa, los ajustes de imagen en las capturas, el ecualizador y el paso automático al siguiente de la lista. También comprueba que la imagen en pantalla nunca se deforme.
 
 ## Limitaciones conocidas
 
-- Cambiar el espejo o la rotación produce un corte breve, porque se recrea el reproductor. Es una limitación de libVLC 3.
-- Con espejo o rotación, VLC puede dejar de usar la decodificación por hardware para aplicar el filtro. En videos 4K eso puede subir el uso de CPU.
 - El ecualizador afecta a la reproducción, no al audio exportado.
-- No se tiene en cuenta la relación de aspecto de píxel no cuadrado (video anamórfico) al calcular el recuadro.
+- No se tiene en cuenta la relación de aspecto de píxel no cuadrado (video anamórfico).
+- Cada fotograma pasa por la memoria para dibujarlo. En videos 4K el uso de CPU es mayor que en VLC.
 
 ## Licencia
 
