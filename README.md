@@ -41,6 +41,10 @@ python3 -m venv .venv
 .venv/bin/python -m vlc_zoom_player [video.mp4]
 ```
 
+### Ejecutable de Windows (sin instalar Python)
+
+Cada vez que se sube código a `main`, GitHub Actions (`.github/workflows/ci.yml`) corre las pruebas y genera **VLCZoomPlayer-windows.zip**. Se descarga desde la pestaña **Actions**: abre la ejecución más reciente y busca la sección *Artifacts*. Si publicas una etiqueta `v0.3.0` (o cualquier `v*`), el zip queda además adjunto a un *Release*. El ejecutable usa el VLC de 64 bits instalado en el equipo.
+
 ## Uso
 
 | Tecla | Acción |
